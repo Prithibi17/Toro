@@ -22,7 +22,7 @@ service cloud.firestore {
       allow read: if activeMember(companyId); allow write: if false;
       match /members/{uid} { allow read: if activeMember(companyId); allow write: if false; }
       match /departments/{id} { allow read: if activeMember(companyId); allow write: if admin(companyId); }
-      match /invitations/{id} { allow read: if admin(companyId); allow write: if false; }
+      match /invitations/{id} { allow read: if admin(companyId) || (signedIn() && resource.data.email == request.auth.token.email); allow write: if false; }
       match /channels/{channelId} {
         allow read: if channelAccess(companyId, channelId); allow write: if false;
         match /messages/{messageId} { allow read: if channelAccess(companyId, channelId); allow write: if false; }
