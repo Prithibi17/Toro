@@ -1,0 +1,2 @@
+"use client";import{useEffect}from"react";import{onAuthStateChanged,reload}from"firebase/auth";import{auth}from"@/lib/firebase-client";
+export function InvitationSync(){useEffect(()=>{if(!auth)return;return onAuthStateChanged(auth,async user=>{if(!user)return;await reload(user);if(!user.emailVerified)return;const idToken=await user.getIdToken(true);const r=await fetch("/api/auth/session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({idToken})});if(r.ok){const j=await r.json();if(j.activatedInvitations>0)location.reload()}})},[]);return null}

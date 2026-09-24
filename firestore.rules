@@ -1,0 +1,39 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function memberDoc(companyId) { return get(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid)); }
+    function activeMember(companyId) { return signedIn() && exists(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid)) && memberDoc(companyId).data.status == 'active'; }
+    function admin(companyId) { return activeMember(companyId) && memberDoc(companyId).data.role in ['owner','admin']; }
+    function channelDoc(companyId, channelId) { return get(/databases/$(database)/documents/companies/$(companyId)/channels/$(channelId)); }
+    function channelAccess(companyId, channelId) {
+      return activeMember(companyId) && (
+        channelDoc(companyId, channelId).data.type == 'public' ||
+        request.auth.uid in channelDoc(companyId, channelId).data.memberIds ||
+        (channelDoc(companyId, channelId).data.type == 'department' && channelDoc(companyId, channelId).data.departmentId in memberDoc(companyId).data.departmentIds)
+      );
+    }
+    match /users/{uid} {
+      allow create, read, update: if signedIn() && request.auth.uid == uid;
+      allow delete: if false;
+      match /companyMemberships/{companyId} { allow read: if signedIn() && request.auth.uid == uid; allow write: if false; }
+    }
+    match /companies/{companyId} {
+      allow read: if activeMember(companyId); allow write: if false;
+      match /members/{uid} { allow read: if activeMember(companyId); allow write: if false; }
+      match /departments/{id} { allow read: if activeMember(companyId); allow write: if admin(companyId); }
+      match /invitations/{id} { allow read: if admin(companyId); allow write: if false; }
+      match /channels/{channelId} {
+        allow read: if channelAccess(companyId, channelId); allow write: if false;
+        match /messages/{messageId} { allow read: if channelAccess(companyId, channelId); allow write: if false; }
+      }
+      match /calls/{channelId} {
+        allow read, create, update: if channelAccess(companyId, channelId); allow delete: if false;
+        match /{candidateCollection}/{candidateId} { allow read, create, update: if channelAccess(companyId, channelId); allow delete: if false; }
+      }
+      match /notifications/{id} { allow read: if activeMember(companyId) && resource.data.recipientId == request.auth.uid; allow write: if false; }
+      match /{document=**} { allow read: if activeMember(companyId); allow write: if false; }
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

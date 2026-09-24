@@ -1,0 +1,2 @@
+import { notFound } from "next/navigation";import { requireMembership } from "@/lib/session";import { TaskBoard } from "@/components/task-board";
+export default async function Page({params}:{params:Promise<{companyId:string}>}){const{companyId}=await params;const ctx=await requireMembership(companyId);if(!ctx||!ctx.membership.enabledModules?.includes("todo"))notFound();return <TaskBoard companyId={companyId}/>}

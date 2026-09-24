@@ -1,0 +1,1 @@
+export function Logo({compact=false}:{compact?:boolean}){return <div className="flex items-center gap-2.5"><span className="grid h-9 w-9 place-items-center rounded-xl bg-[var(--accent)] text-lg font-black text-white">T</span>{!compact&&<span className="text-xl font-extrabold tracking-tight">toro</span>}</div>}

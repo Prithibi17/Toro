@@ -1,0 +1,2 @@
+import { z } from "zod";
+export const companySchema=z.object({name:z.string().trim().min(2).max(100),businessCategory:z.string().trim().min(2).max(80),description:z.string().trim().max(500).default(""),country:z.string().trim().min(2).max(80),city:z.string().trim().max(80).default(""),currency:z.string().trim().length(3),timezone:z.string().trim().min(2).max(80),modules:z.array(z.string()).min(1),departments:z.array(z.string().trim().min(2).max(80)).max(20),invitations:z.array(z.object({email:z.string().email(),name:z.string().max(80).optional()})).max(25)});

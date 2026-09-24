@@ -1,0 +1,3 @@
+import{notFound,redirect}from"next/navigation";import{requireMembership}from"@/lib/session";import{WorkspaceShell}from"@/components/workspace-shell";import type{ModuleKey}from"@/lib/types";
+export const dynamic="force-dynamic";
+export default async function Layout({children,params}:{children:React.ReactNode;params:Promise<{companyId:string}>}){const{companyId}=await params;let ctx;try{ctx=await requireMembership(companyId)}catch{redirect('/select-company')}if(!ctx)notFound();const m=ctx.membership;return <WorkspaceShell companyId={companyId} companyName={m.companyName||"Company"} role={m.role||"member"} modules={(m.enabledModules||[]) as ModuleKey[]}>{children}</WorkspaceShell>}

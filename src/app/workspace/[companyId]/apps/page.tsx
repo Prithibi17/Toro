@@ -1,0 +1,2 @@
+import{notFound}from"next/navigation";import{requireMembership}from"@/lib/session";import{AppsManager}from"@/components/apps-manager";import type{ModuleKey}from"@/lib/types";
+export default async function Page({params}:{params:Promise<{companyId:string}>}){const{companyId}=await params;const ctx=await requireMembership(companyId);if(!ctx)notFound();return <AppsManager companyId={companyId} initialEnabled={(ctx.membership.enabledModules||[]) as ModuleKey[]} isOwner={ctx.membership.role==="owner"}/>}

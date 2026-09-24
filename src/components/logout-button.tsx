@@ -1,0 +1,1 @@
+"use client";import{LogOut}from"lucide-react";import{signOut}from"firebase/auth";import{auth}from"@/lib/firebase-client";export function LogoutButton(){return <button className="btn btn-secondary" onClick={async()=>{if(auth)await signOut(auth);await fetch('/api/auth/session',{method:'DELETE'});location.href='/login'}}><LogOut size={16}/>Logout</button>}
