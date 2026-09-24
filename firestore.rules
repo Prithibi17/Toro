@@ -1,39 +1,339 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() { return request.auth != null; }
-    function memberDoc(companyId) { return get(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid)); }
-    function activeMember(companyId) { return signedIn() && exists(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid)) && memberDoc(companyId).data.status == 'active'; }
-    function admin(companyId) { return activeMember(companyId) && memberDoc(companyId).data.role in ['owner','admin']; }
-    function channelDoc(companyId, channelId) { return get(/databases/$(database)/documents/companies/$(companyId)/channels/$(channelId)); }
-    function channelAccess(companyId, channelId) {
-      return activeMember(companyId) && (
-        channelDoc(companyId, channelId).data.type == 'public' ||
-        request.auth.uid in channelDoc(companyId, channelId).data.memberIds ||
-        (channelDoc(companyId, channelId).data.type == 'department' && channelDoc(companyId, channelId).data.departmentId in memberDoc(companyId).data.departmentIds)
-      );
+
+    function isSignedIn() {
+      return request.auth != null;
     }
-    match /users/{uid} {
-      allow create, read, update: if signedIn() && request.auth.uid == uid;
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function memberPath(companyId, uid) {
+      return /databases/$(database)/documents/companies/$(companyId)/members/$(uid);
+    }
+
+    function isMember(companyId) {
+      return isSignedIn()
+        && exists(memberPath(companyId, request.auth.uid));
+    }
+
+    function isActiveMember(companyId) {
+      return isMember(companyId)
+        && get(memberPath(companyId, request.auth.uid)).data.status == "active";
+    }
+
+    function memberRole(companyId) {
+      return get(
+        memberPath(companyId, request.auth.uid)
+      ).data.role;
+    }
+
+    function isCompanyOwner(companyId) {
+      return isActiveMember(companyId)
+        && memberRole(companyId) == "owner";
+    }
+
+    function isCompanyAdmin(companyId) {
+      return isActiveMember(companyId)
+        && memberRole(companyId) in ["owner", "admin"];
+    }
+
+    function hasEnabledModule(companyId, moduleName) {
+      return isActiveMember(companyId)
+        && moduleName in get(
+          /databases/$(database)/documents/companies/$(companyId)
+        ).data.enabledModules;
+    }
+
+    /*
+     * Global user profiles
+     */
+    match /users/{userId} {
+      allow create: if isOwner(userId);
+      allow read, update: if isOwner(userId);
       allow delete: if false;
-      match /companyMemberships/{companyId} { allow read: if signedIn() && request.auth.uid == uid; allow write: if false; }
+
+      /*
+       * Workspace-discovery mirror.
+       * Written only by trusted server code through Firebase Admin.
+       */
+      match /companyMemberships/{companyId} {
+        allow read: if isOwner(userId);
+        allow create, update, delete: if false;
+      }
     }
+
+    /*
+     * Company records
+     */
     match /companies/{companyId} {
-      allow read: if activeMember(companyId); allow write: if false;
-      match /members/{uid} { allow read: if activeMember(companyId); allow write: if false; }
-      match /departments/{id} { allow read: if activeMember(companyId); allow write: if admin(companyId); }
-      match /invitations/{id} { allow read: if admin(companyId) || (signedIn() && resource.data.email == request.auth.token.email); allow write: if false; }
+      allow read: if isActiveMember(companyId);
+
+      /*
+       * Company creation and sensitive changes must pass through
+       * trusted server code using Firebase Admin.
+       */
+      allow create, update, delete: if false;
+
+      /*
+       * Authoritative company memberships
+       */
+      match /members/{userId} {
+        allow read: if isActiveMember(companyId);
+        allow create, update, delete: if false;
+      }
+
+      /*
+       * Departments
+       */
+      match /departments/{departmentId} {
+        allow read: if isActiveMember(companyId);
+        allow create, update, delete: if isCompanyAdmin(companyId);
+      }
+
+      /*
+       * Roles and permission templates
+       */
+      match /roles/{roleId} {
+        allow read: if isActiveMember(companyId);
+        allow create, update, delete: if isCompanyAdmin(companyId);
+      }
+
+      /*
+       * Invitations are managed by trusted server operations.
+       * Admins can read all invitations.
+       * An invitee can read their own invitation (matched by email)
+       * so the accept / decline UI can surface it.
+       */
+      match /invitations/{invitationId} {
+        allow read: if isCompanyAdmin(companyId)
+          || (isSignedIn() && resource.data.email == request.auth.token.email);
+        allow create, update, delete: if false;
+      }
+
+      /*
+       * Projects
+       */
+      match /projects/{projectId} {
+        allow read: if isActiveMember(companyId);
+
+        allow create: if isCompanyAdmin(companyId);
+
+        allow update: if isCompanyAdmin(companyId)
+          || (
+            isActiveMember(companyId)
+            && request.auth.uid in resource.data.memberIds
+          );
+
+        allow delete: if isCompanyAdmin(companyId);
+
+        match /{subdocument=**} {
+          allow read: if isActiveMember(companyId);
+          allow write: if isCompanyAdmin(companyId);
+        }
+      }
+
+      /*
+       * Tasks
+       */
+      match /tasks/{taskId} {
+        allow read: if isActiveMember(companyId)
+          && (
+            isCompanyAdmin(companyId)
+            || request.auth.uid == resource.data.creatorId
+            || request.auth.uid in resource.data.assigneeIds
+            || request.auth.uid in resource.data.viewerIds
+          );
+
+        allow create: if isActiveMember(companyId)
+          && request.resource.data.companyId == companyId
+          && request.resource.data.creatorId == request.auth.uid;
+
+        allow update: if isCompanyAdmin(companyId)
+          || (
+            isActiveMember(companyId)
+            && (
+              request.auth.uid == resource.data.creatorId
+              || request.auth.uid in resource.data.assigneeIds
+            )
+            && request.resource.data.companyId == resource.data.companyId
+            && request.resource.data.creatorId == resource.data.creatorId
+          );
+
+        allow delete: if isCompanyAdmin(companyId)
+          || (
+            isActiveMember(companyId)
+            && request.auth.uid == resource.data.creatorId
+          );
+
+        match /comments/{commentId} {
+          allow read: if isActiveMember(companyId);
+
+          allow create: if isActiveMember(companyId)
+            && request.resource.data.authorId == request.auth.uid;
+
+          allow update, delete: if isActiveMember(companyId)
+            && resource.data.authorId == request.auth.uid;
+        }
+      }
+
+      /*
+       * Discussions and channel messages
+       */
       match /channels/{channelId} {
-        allow read: if channelAccess(companyId, channelId); allow write: if false;
-        match /messages/{messageId} { allow read: if channelAccess(companyId, channelId); allow write: if false; }
+        allow read: if isActiveMember(companyId);
+
+        allow create, update, delete: if isCompanyAdmin(companyId);
+
+        match /messages/{messageId} {
+          allow read: if isActiveMember(companyId);
+
+          allow create: if isActiveMember(companyId)
+            && request.resource.data.authorId == request.auth.uid;
+
+          allow update, delete: if isActiveMember(companyId)
+            && resource.data.authorId == request.auth.uid;
+        }
       }
-      match /calls/{channelId} {
-        allow read, create, update: if channelAccess(companyId, channelId); allow delete: if false;
-        match /{candidateCollection}/{candidateId} { allow read, create, update: if channelAccess(companyId, channelId); allow delete: if false; }
+
+      /*
+       * WebRTC calls (signaling via Firestore)
+       * Subcollections: signals, offerCandidates, answerCandidates
+       * update is required so peers can write their SDP answer into
+       * an existing signal document.
+       */
+      match /calls/{callId} {
+        allow read, create, update: if isActiveMember(companyId);
+        allow delete: if false;
+
+        match /{candidateCollection}/{candidateId} {
+          allow read, create, update: if isActiveMember(companyId);
+          allow delete: if false;
+        }
       }
-      match /notifications/{id} { allow read: if activeMember(companyId) && resource.data.recipientId == request.auth.uid; allow write: if false; }
-      match /{document=**} { allow read: if activeMember(companyId); allow write: if false; }
+
+      /*
+       * Calendar
+       */
+      match /calendarEvents/{eventId} {
+        allow read: if isActiveMember(companyId);
+
+        allow create: if isActiveMember(companyId)
+          && request.resource.data.creatorId == request.auth.uid;
+
+        allow update, delete: if isCompanyAdmin(companyId)
+          || (
+            isActiveMember(companyId)
+            && resource.data.creatorId == request.auth.uid
+          );
+      }
+
+      /*
+       * Notifications
+       */
+      match /notifications/{notificationId} {
+        allow read: if isActiveMember(companyId)
+          && resource.data.recipientId == request.auth.uid;
+
+        allow update: if isActiveMember(companyId)
+          && resource.data.recipientId == request.auth.uid
+          && request.resource.data.diff(resource.data)
+            .affectedKeys()
+            .hasOnly(["read", "readAt"]);
+
+        allow create, delete: if false;
+      }
+
+      /*
+       * Administrative audit records are immutable from clients.
+       */
+      match /auditLogs/{auditId} {
+        allow read: if isCompanyAdmin(companyId);
+        allow create, update, delete: if false;
+      }
+
+      /*
+       * Company configuration
+       */
+      match /settings/{settingId} {
+        allow read: if isActiveMember(companyId);
+        allow create, update, delete: if isCompanyAdmin(companyId);
+      }
+
+      /*
+       * Business modules currently remain server-controlled.
+       * Add narrower rules as each complete workflow is implemented.
+       */
+      match /contacts/{recordId} {
+        allow read: if isActiveMember(companyId);
+        allow write: if isCompanyAdmin(companyId);
+      }
+
+      match /crmDeals/{recordId} {
+        allow read: if isActiveMember(companyId)
+          && hasEnabledModule(companyId, "crm");
+        allow write: if isCompanyAdmin(companyId)
+          && hasEnabledModule(companyId, "crm");
+      }
+
+      match /salesOrders/{recordId} {
+        allow read: if isActiveMember(companyId)
+          && hasEnabledModule(companyId, "sales");
+        allow write: if false;
+      }
+
+      match /invoices/{recordId} {
+        allow read: if isCompanyAdmin(companyId)
+          && hasEnabledModule(companyId, "accounting");
+        allow write: if false;
+      }
+
+      match /products/{recordId} {
+        allow read: if isActiveMember(companyId);
+        allow write: if isCompanyAdmin(companyId);
+      }
+
+      match /warehouses/{recordId} {
+        allow read: if isActiveMember(companyId)
+          && hasEnabledModule(companyId, "inventory");
+        allow write: if isCompanyAdmin(companyId)
+          && hasEnabledModule(companyId, "inventory");
+      }
+
+      match /stockMovements/{recordId} {
+        allow read: if isActiveMember(companyId)
+          && hasEnabledModule(companyId, "inventory");
+        allow write: if false;
+      }
+
+      match /purchaseOrders/{recordId} {
+        allow read: if isActiveMember(companyId)
+          && hasEnabledModule(companyId, "purchase");
+        allow write: if false;
+      }
+
+      match /manufacturingOrders/{recordId} {
+        allow read: if isActiveMember(companyId)
+          && hasEnabledModule(companyId, "manufacturing");
+        allow write: if false;
+      }
+
+      /*
+       * Deny any company collection not explicitly listed above.
+       */
+      match /{document=**} {
+        allow read, write: if false;
+      }
     }
-    match /{document=**} { allow read, write: if false; }
+
+    /*
+     * Deny everything outside the declared structure.
+     */
+    match /{document=**} {
+      allow read, write: if false;
+    }
   }
 }
